@@ -1,21 +1,19 @@
-# Gunakan image Go resmi versi terbaru
 FROM golang:1.22-alpine
 
-# Set folder kerja di dalam container
 WORKDIR /app
 
-# Copy file go.mod dan go.sum duluan (biar build lebih cepat)
-COPY go.mod go.sum ./
+# Gunakan wildcard biar kalau go.sum belum ada, build-nya nggak error
+COPY go.mod go.sum* ./
+
+# Download dependencies
 RUN go mod download
 
-# Copy semua kode backend kamu
+# Copy semua file dari folder tempat Dockerfile ini berada
 COPY . .
 
-# Build aplikasinya jadi file binary bernama 'main'
+# Build
 RUN go build -o main .
 
-# Ekspos port (nanti Railway bakal otomatis atur ini)
 EXPOSE 8080
 
-# Jalankan aplikasinya
 CMD ["./main"]
