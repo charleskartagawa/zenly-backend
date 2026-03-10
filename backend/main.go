@@ -18,18 +18,19 @@ var upgrader = websocket.Upgrader{
 }
 
 func initDB() {
-	// Railway/Render otomatis kasih DATABASE_URL
+	// Railway akan memberikan variabel lingkungan DATABASE_URL secara otomatis
+	// Jika tidak ada, kita pakai manual URL yang kamu berikan tadi
 	connStr := os.Getenv("DATABASE_URL")
-	
-	// Kalau di laptop (lokal), pakai settingan lama kamu
 	if connStr == "" {
-		connStr = "host=localhost port=5432 user=user_zenly password=password_zenly dbname=zenly_db sslmode=disable"
-		fmt.Println("🏠 Menjalankan Database LOKAL...")
+		// Paste URL Railway kamu di sini sebagai fallback jika dijalankan lokal
+		connStr = "postgresql://postgres:nCnQZcKFeUuJrKurnuVenlmOvnOlwsCJ@postgres.railway.internal:5432/railway"
+		fmt.Println("🏠 Menjalankan Database LOKAL/Internal...")
 	} else {
-		fmt.Println("☁️ Menjalankan Database CLOUD...")
+		fmt.Println("☁️ Menjalankan Database CLOUD (Railway Environment)...")
 	}
 
 	var err error
+	// Driver 'postgres' bisa langsung menerima format postgresql://...
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
 		log.Fatal("Gagal buka koneksi DB:", err)
@@ -37,16 +38,24 @@ func initDB() {
 
 	err = db.Ping()
 	if err != nil {
-		log.Fatal("Gagal konek ke DB (Ping Error):", err)
+		log.Fatal("Gagal konek ke DB (Ping Error). Pastikan Database di Railway sudah 'Active':", err)
 	}
 	fmt.Println("✅ Database PostgreSQL Terhubung!")
 }
 
+// Endpoint untuk mengambil riwayat lokasi (GET /history)
 func handleHistory(w http.ResponseWriter, r *http.Request) {
+	// Biar bisa diakses dari mana saja (CORS)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 
-	rows, err := db.Query("SELECT user_id, ST_Y(geom::geometry), ST_X(geom::geometry), recorded_at FROM user_locations ORDER BY recorded_at DESC LIMIT 20")
+	// Query mengambil 20 lokasi terbaru
+	rows, err := db.Query(`
+		SELECT user_id, ST_Y(geom::geometry), ST_X(geom::geometry), recorded_at 
+		FROM user_locations 
+		ORDER BY recorded_at DESC 
+		LIMIT 20
+	`)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -59,11 +68,22 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 		var lat, lon float64
 		var t string
 		rows.Scan(&u, &lat, &lon, &t)
-		history = append(history, map[string]interface{}{"user": u, "lat": lat, "lon": lon, "time": t})
+		history = append(history, map[string]interface{}{
+			"user": u, 
+			"lat": lat, 
+			"lon": lon, 
+			"time": t,
+		})
 	}
+	
+	if history == nil {
+		history = []map[string]interface{}{}
+	}
+	
 	json.NewEncoder(w).Encode(history)
 }
 
+// Endpoint WebSocket untuk menerima lokasi (WS /ws)
 func handleConnections(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -86,14 +106,22 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		// Masukkan data ke PostGIS
-		_, err = db.Exec("INSERT INTO user_locations (user_id, geom) VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326))",
-			userID, msg["longitude"], msg["latitude"])
-		
-		if err != nil {
-			log.Println("⚠️ Gagal Simpan Lokasi:", err)
-		} else {
-			fmt.Printf("📍 Lokasi [%s] Diterima: Lat %.5f, Lon %.5f\n", userID, msg["latitude"], msg["longitude"])
+		// Validasi data latitude & longitude
+		lat, latOk := msg["latitude"].(float64)
+		lon, lonOk := msg["longitude"].(float64)
+
+		if latOk && lonOk {
+			// Simpan ke PostGIS
+			_, err = db.Exec(`
+				INSERT INTO user_locations (user_id, geom) 
+				VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326))
+			`, userID, lon, lat)
+			
+			if err != nil {
+				log.Println("⚠️ Gagal Simpan ke Database:", err)
+			} else {
+				fmt.Printf("📍 Lokasi [%s] Diterima: Lat %.5f, Lon %.5f\n", userID, lat, lon)
+			}
 		}
 	}
 }
@@ -101,16 +129,16 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 func main() {
 	initDB()
 
-	// Railway/Cloud butuh port dinamis via variabel PORT
+	// Port dinamis dari Railway
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "9000" // Default kalau di laptop
+		port = "9000"
 	}
 
 	http.HandleFunc("/ws", handleConnections)
 	http.HandleFunc("/history", handleHistory)
 
-	fmt.Printf("🚀 Server Zenly jalan di Port :%s\n", port)
+	fmt.Printf("🚀 Server Zenly Online di Port :%s\n", port)
 	err := http.ListenAndServe(":"+port, nil)
 	if err != nil {
 		log.Fatal("Server Error:", err)
